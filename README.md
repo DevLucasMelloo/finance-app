@@ -118,7 +118,9 @@ pytest
 
 ## 📸 Screenshots
 
-*(adicione prints da aplicação aqui futuramente)*
+![Tela 1](print/print_tela_1.jpg)
+
+![Tela 2](print/print_tela_2.jpg)
 
 ---
 
