@@ -729,7 +729,7 @@ class MainWindow(QMainWindow):
                         payment_method,
                         nature,
                         category
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
                     row["entry_date"],
                     row["description"],

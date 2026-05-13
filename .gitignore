@@ -19,6 +19,12 @@ __pycache__/
 *.log
 .cache/
 
+# Variáveis de ambiente (nunca commitar)
+.env
+
+# Bot — estado de sessões do WhatsApp
+bot/sessions.json
+
 # Sistema operacional
 .DS_Store
 Thumbs.db

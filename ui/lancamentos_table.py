@@ -1,19 +1,15 @@
 from PySide6.QtCore import QAbstractTableModel, Qt
 from PySide6.QtGui import QColor
-from datetime import datetime
-from infrastructure.database import get_connection
+from infrastructure.database import get_connection, to_date
+
+_COL_KEYS = [
+    "entry_date", "description", "amount",
+    "entry_type", "payment_method", "nature", "category",
+]
 
 
 class LancamentosTableModel(QAbstractTableModel):
-    headers = [
-        "Data",
-        "Descrição",
-        "Valor",
-        "Tipo",
-        "Pagamento",
-        "Natureza",
-        "Categoria",
-    ]
+    headers = ["Data", "Descrição", "Valor", "Tipo", "Pagamento", "Natureza", "Categoria"]
 
     def __init__(self):
         super().__init__()
@@ -26,7 +22,7 @@ class LancamentosTableModel(QAbstractTableModel):
         self._load_and_reset()
 
     # ==========================
-    # 🔁 CONTROLE
+    # CONTROLE
     # ==========================
     def set_filters(self, filters: dict):
         self.filters = filters
@@ -49,34 +45,34 @@ class LancamentosTableModel(QAbstractTableModel):
         self._load_and_reset()
 
     # ==========================
-    # 📊 WHERE
+    # WHERE
     # ==========================
     def _build_where(self):
         where = " WHERE 1=1 "
         params = []
 
         if self.filters.get("start_date"):
-            where += " AND entry_date >= ?"
+            where += " AND entry_date >= %s"
             params.append(self.filters["start_date"])
 
         if self.filters.get("end_date"):
-            where += " AND entry_date <= ?"
+            where += " AND entry_date <= %s"
             params.append(self.filters["end_date"])
 
         if self.filters.get("entry_type"):
-            where += " AND entry_type = ?"
+            where += " AND entry_type = %s"
             params.append(self.filters["entry_type"])
 
         if self.filters.get("nature"):
-            where += " AND nature = ?"
+            where += " AND nature = %s"
             params.append(self.filters["nature"])
 
         if self.search_text:
             where += """
                 AND (
-                    description LIKE ?
-                    OR category LIKE ?
-                    OR payment_method LIKE ?
+                    description ILIKE %s
+                    OR category ILIKE %s
+                    OR payment_method ILIKE %s
                 )
             """
             like = f"%{self.search_text}%"
@@ -85,7 +81,7 @@ class LancamentosTableModel(QAbstractTableModel):
         return where, params
 
     # ==========================
-    # 🔄 LOAD
+    # LOAD
     # ==========================
     def _load_and_reset(self):
         self.beginResetModel()
@@ -94,7 +90,6 @@ class LancamentosTableModel(QAbstractTableModel):
         where, params = self._build_where()
 
         with get_connection() as conn:
-            # 📄 LANÇAMENTOS
             lanc_rows = conn.execute(f"""
                 SELECT
                     id,
@@ -105,29 +100,27 @@ class LancamentosTableModel(QAbstractTableModel):
                     payment_method,
                     nature,
                     category,
-                    'LANCAMENTO' as __tipo__
+                    'LANCAMENTO' AS __tipo__
                 FROM lancamentos
                 {where}
             """, params).fetchall()
 
-            # 🔁 TRANSFERÊNCIAS
             transfer_rows = conn.execute("""
                 SELECT
                     id,
-                    transfer_date,
-                    'Transferência interna',
+                    transfer_date           AS entry_date,
+                    description,
                     amount,
-                    'TRANSFERENCIA',
-                    origin || ' → ' || destination,
-                    destination,
-                    'Transferência',
-                    'TRANSFERENCIA' as __tipo__
+                    'TRANSFERENCIA'         AS entry_type,
+                    origin || ' → ' || destination AS payment_method,
+                    destination             AS nature,
+                    'Transferência'         AS category,
+                    'TRANSFERENCIA'         AS __tipo__
                 FROM transferencias
             """).fetchall()
 
-        # 🔀 UNIR + ORDENAR
         all_rows = list(lanc_rows) + list(transfer_rows)
-        all_rows.sort(key=lambda r: r[1], reverse=True)
+        all_rows.sort(key=lambda r: to_date(r["entry_date"]), reverse=True)
 
         self.total_rows = len(all_rows)
         self._data = all_rows[offset: offset + self.page_size]
@@ -135,7 +128,7 @@ class LancamentosTableModel(QAbstractTableModel):
         self.endResetModel()
 
     # ==========================
-    # 📋 QT MODEL
+    # QT MODEL
     # ==========================
     def rowCount(self, parent=None):
         return len(self._data)
@@ -148,59 +141,39 @@ class LancamentosTableModel(QAbstractTableModel):
             return None
 
         row = self._data[index.row()]
-        value = row[index.column() + 1]
+        col_key = _COL_KEYS[index.column()]
+        value = row[col_key]
 
-        entry_type = row[4]   # PROVENTO / DESPESA / TRANSFERENCIA
-        nature = row[6]       # CAIXA / INVESTIMENTO / RESERVA
-        tipo_linha = row[-1]  # LANCAMENTO / TRANSFERENCIA
+        entry_type = row["entry_type"]
+        nature = row["nature"]
+        tipo_linha = row["__tipo__"]
 
-        # --------------------
-        # TEXTO
-        # --------------------
         if role == Qt.DisplayRole:
-            if index.column() == 0:
-                return datetime.fromisoformat(value).strftime("%d/%m/%Y")
-
-            if index.column() == 2:
+            if col_key == "entry_date":
+                d = to_date(value)
+                return d.strftime("%d/%m/%Y") if d else ""
+            if col_key == "amount":
                 return f"R$ {abs(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return value if value is not None else ""
 
-            return value
-
-        # --------------------
-        # ALINHAMENTO
-        # --------------------
         if role == Qt.TextAlignmentRole:
-            if index.column() == 2:
+            if col_key == "amount":
                 return Qt.AlignRight | Qt.AlignVCenter
             return Qt.AlignLeft | Qt.AlignVCenter
 
-        # --------------------
-        # CORES
-        # --------------------
         if role == Qt.ForegroundRole:
-
-            # 🔁 TRANSFERÊNCIA (prioridade máxima)
             if tipo_linha == "TRANSFERENCIA":
-                return QColor("#4e4e4e")  # cinza
-
-            # 🟠 INVESTIMENTO
+                return QColor("#4e4e4e")
             if nature == "INVESTIMENTO":
-                return QColor("#ef6c00")  # laranja
-
-            # 🟣 RESERVA
+                return QColor("#ef6c00")
             if nature == "RESERVA":
-                return QColor("#6a1b9a")  # roxo
-
-            # 🟢 PROVENTO (CAIXA)
+                return QColor("#6a1b9a")
             if entry_type == "PROVENTO":
-                return QColor("#2e7d32")  # verde
-
-            # 🔴 DESPESA (CAIXA)
+                return QColor("#2e7d32")
             if entry_type == "DESPESA":
-                return QColor("#c62828")  # vermelho
+                return QColor("#c62828")
 
         return None
-
 
     def headerData(self, section, orientation, role):
         if role == Qt.DisplayRole and orientation == Qt.Horizontal:
@@ -208,10 +181,10 @@ class LancamentosTableModel(QAbstractTableModel):
         return None
 
     # ==========================
-    # 🔧 HELPERS
+    # HELPERS
     # ==========================
     def get_row(self, row_index: int):
         return self._data[row_index]
 
     def get_id(self, row_index: int):
-        return self._data[row_index][0]
+        return self._data[row_index]["id"]

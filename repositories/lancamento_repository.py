@@ -1,27 +1,21 @@
-from datetime import date
 from domain.lancamento import Lancamento, EntryType, PaymentMethod, NatureType
-from infrastructure.database import get_connection
+from infrastructure.database import get_connection, to_date
 from infrastructure.enum_mapper import enum_from_db
 
 
 class LancamentoRepository:
+
     def add(self, lancamento: Lancamento) -> None:
         with get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO lancamentos (
-                    entry_date,
-                    amount,
-                    entry_type,
-                    payment_method,
-                    category,
-                    nature,
-                    description
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    entry_date, amount, entry_type, payment_method,
+                    category, nature, description
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
-                    lancamento.entry_date.isoformat(),
+                    lancamento.entry_date,
                     lancamento.amount,
                     lancamento.entry_type.value,
                     lancamento.payment_method.value,
@@ -35,90 +29,82 @@ class LancamentoRepository:
         with get_connection() as conn:
             rows = conn.execute("SELECT * FROM lancamentos").fetchall()
 
-        lancamentos: list[Lancamento] = []
-
-        for row in rows:
-            lancamentos.append(
-                Lancamento(
-                    entry_date=date.fromisoformat(row["entry_date"]),
-                    amount=row["amount"],
-                    entry_type=EntryType(row["entry_type"]),
-                    payment_method=PaymentMethod(row["payment_method"]),
-                    category=row["category"],
-                    nature=NatureType(row["nature"]),
-                    description=row["description"],
-                )
+        return [
+            Lancamento(
+                entry_date=to_date(row["entry_date"]),
+                amount=row["amount"],
+                entry_type=EntryType(row["entry_type"]),
+                payment_method=PaymentMethod(row["payment_method"]),
+                category=row["category"],
+                nature=NatureType(row["nature"]),
+                description=row["description"],
             )
+            for row in rows
+        ]
 
-        return lancamentos
-    
-    def delete(self, lancamento_id: int):
-        from infrastructure.database import get_connection
-
+    def get_last(self):
         with get_connection() as conn:
-            conn.execute(
-                "DELETE FROM lancamentos WHERE id = ?",
-                (lancamento_id,)
-            )
-            conn.commit()
+            return conn.execute(
+                "SELECT * FROM lancamentos ORDER BY id DESC LIMIT 1"
+            ).fetchone()
 
     def get_by_id(self, lancamento_id: int):
         with get_connection() as conn:
-            row = conn.execute(
+            return conn.execute(
                 """
-                SELECT
-                    id,
-                    entry_date,
-                    description,
-                    amount,
-                    entry_type,
-                    payment_method,
-                    nature,
-                    category
-                FROM lancamentos
-                WHERE id = ?
+                SELECT id, entry_date, description, amount,
+                       entry_type, payment_method, nature, category
+                FROM lancamentos WHERE id = %s
                 """,
-                (lancamento_id,)
+                (lancamento_id,),
             ).fetchone()
 
-            return row
-        
     def update(self, lancamento_id: int, lancamento: Lancamento):
         with get_connection() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE lancamentos SET
-                    entry_date = ?,
-                    description = ?,
-                    amount = ?,
-                    entry_type = ?,
-                    payment_method = ?,
-                    nature = ?,
-                    category = ?
-                WHERE id = ?
-            """, (
-                lancamento.entry_date,
-                lancamento.description,
-                lancamento.amount,
-                lancamento.entry_type.value,
-                lancamento.payment_method.value,
-                lancamento.nature.value,
-                lancamento.category,
-                lancamento_id
-            ))
-            conn.commit()
-            
-    def add_from_investment(self, amount: float, nature: "NatureType", description: str, is_income: bool) -> int:
+                    entry_date = %s, description = %s, amount = %s,
+                    entry_type = %s, payment_method = %s,
+                    nature = %s, category = %s
+                WHERE id = %s
+                """,
+                (
+                    lancamento.entry_date,
+                    lancamento.description,
+                    lancamento.amount,
+                    lancamento.entry_type.value,
+                    lancamento.payment_method.value,
+                    lancamento.nature.value,
+                    lancamento.category,
+                    lancamento_id,
+                ),
+            )
+
+    def delete(self, lancamento_id: int):
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM lancamentos WHERE id = %s", (lancamento_id,)
+            )
+
+    def add_from_investment(
+        self, amount: float, nature: "NatureType", description: str, is_income: bool
+    ) -> int:
+        from domain.lancamento import EntryType, PaymentMethod
+        from datetime import date
+
         entry_type = EntryType.INCOME if is_income else EntryType.EXPENSE
         with get_connection() as conn:
-            cursor = conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO lancamentos (
                     entry_date, amount, entry_type, payment_method,
                     category, nature, description
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (
-                    date.today().isoformat(),
+                    date.today(),
                     amount,
                     entry_type.value,
                     PaymentMethod.PIX.value,
@@ -127,26 +113,26 @@ class LancamentoRepository:
                     description,
                 ),
             )
-            conn.commit()
-            return cursor.lastrowid
+            return cur.fetchone()["id"]
 
     def add_transferencia(self, amount, from_nature, to_nature):
+        from datetime import date
+        from domain.lancamento import EntryType
+
         with get_connection() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO lancamentos (
-                    entry_date,
-                    description,
+                    entry_date, description, amount, entry_type,
+                    from_nature, to_nature
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    date.today(),
+                    f"Transferência {from_nature} → {to_nature}",
                     amount,
-                    entry_type,
+                    EntryType.TRANSFER.value,
                     from_nature,
-                    to_nature
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                date.today().isoformat(),
-                f"Transferência {from_nature} → {to_nature}",
-                amount,
-                EntryType.TRANSFER.value,
-                from_nature,
-                to_nature
-            ))
-            conn.commit()
+                    to_nature,
+                ),
+            )
