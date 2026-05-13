@@ -1,7 +1,9 @@
-from datetime import date
+from datetime import date as date_type
 from repositories.investment_repository import InvestmentRepository
 from domain.lancamento import NatureType
 from core.finance_app_service import FinanceAppService
+
+CRYPTO_ASSETS = {"BTC", "ETH", "XRP", "SOL", "BNB", "ADA", "DOT", "MATIC", "USDT"}
 
 
 class InvestmentService:
@@ -10,130 +12,114 @@ class InvestmentService:
         self.repo = InvestmentRepository()
         self.finance = FinanceAppService()
 
-    # ==========================
-    # 🟢 COMPRA
-    # ==========================
     def buy(
         self,
         asset: str,
         quantity: float,
         price: float,
-        origin_account: NatureType
+        origin_account: NatureType,
+        broker: str = "",
+        operation_date: date_type | None = None,
     ):
-        total = quantity * price
+        if operation_date is None:
+            operation_date = date_type.today()
 
-        # 🔒 valida saldo
+        total = quantity * price
+        asset_type = "CRYPTO" if asset.upper() in CRYPTO_ASSETS else "OUTRO"
+
         saldo = self.finance.balance_of(origin_account)
         if saldo < total:
-            raise ValueError("Saldo insuficiente")
+            raise ValueError(
+                f"Saldo insuficiente em {origin_account.value}.\n"
+                f"Disponível: R$ {saldo:,.2f} | Necessário: R$ {total:,.2f}"
+            )
 
-        position = self.repo.get_open_position(asset)
+        position = self.repo.get_open_position(asset.upper())
 
-        # ==========================
-        # 📌 SE NÃO EXISTE POSIÇÃO
-        # ==========================
         if not position:
             position_id = self.repo.create_position(
-                asset=asset,
+                asset=asset.upper(),
+                asset_type=asset_type,
                 quantity=quantity,
                 price=price,
                 total=total,
+                broker=broker,
                 origin_account=origin_account.value,
-                created_at=date.today().isoformat()
+                created_at=operation_date.isoformat(),
             )
-
-        # ==========================
-        # 📌 SE JÁ EXISTE POSIÇÃO
-        # ==========================
         else:
             position_id = position["id"]
-
             total_quantity = position["total_quantity"] + quantity
             total_invested = position["total_invested"] + total
-
             avg_price = total_invested / total_quantity
 
-            self.repo.update_position(
-                position_id,
-                total_quantity,
-                avg_price,
-                total_invested
-            )
+            self.repo.update_position(position_id, total_quantity, avg_price, total_invested)
 
-        # salva compra
+        lancamento_id = self.finance._lancamento_repo.add_from_investment(
+            amount=total,
+            nature=origin_account,
+            description=f"Compra de {asset.upper()} - {broker}" if broker else f"Compra de {asset.upper()}",
+            is_income=False,
+        )
+
         self.repo.add_buy(
             position_id,
             quantity,
             price,
             total,
-            date.today().isoformat()
+            broker,
+            operation_date.isoformat(),
+            lancamento_id=lancamento_id,
         )
 
-        # 💰 tira dinheiro da conta
-        self.finance._lancamento_repo.add_from_investment(
-            amount=total,
-            nature=origin_account,
-            description=f"Compra de {asset}",
-            is_income=False
-        )
-
-    # ==========================
-    # 🔴 VENDA
-    # ==========================
     def sell(
         self,
         asset: str,
         quantity: float,
-        price: float
+        price: float,
+        operation_date: date_type | None = None,
     ):
-        position = self.repo.get_open_position(asset)
+        if operation_date is None:
+            operation_date = date_type.today()
+
+        position = self.repo.get_open_position(asset.upper())
 
         if not position:
-            raise ValueError("Você não possui esse ativo")
+            raise ValueError(f"Nenhuma posição aberta para {asset.upper()}")
 
         if quantity > position["total_quantity"]:
-            raise ValueError("Quantidade maior que a posição")
+            raise ValueError(
+                f"Quantidade maior que a posição.\n"
+                f"Disponível: {position['total_quantity']:.8f}"
+            )
 
         total_sale = quantity * price
-
         avg_price = position["avg_price"]
         profit = (price - avg_price) * quantity
 
         new_quantity = position["total_quantity"] - quantity
         new_total = new_quantity * avg_price
 
-        # salva venda
+        origin_account = NatureType(position["origin_account"])
+
+        lancamento_id = self.finance._lancamento_repo.add_from_investment(
+            amount=total_sale,
+            nature=origin_account,
+            description=f"Venda de {asset.upper()} | Lucro: R$ {profit:,.2f}",
+            is_income=True,
+        )
+
         self.repo.add_sell(
             position["id"],
             quantity,
             price,
             total_sale,
             profit,
-            date.today().isoformat()
+            operation_date.isoformat(),
+            lancamento_id=lancamento_id,
         )
 
-        # 💰 devolve dinheiro para conta original
-        origin_account = NatureType(position["origin_account"])
-
-        self.finance._lancamento_repo.add_from_investment(
-            amount=total_sale,
-            nature=origin_account,
-            description=f"Venda de {asset}",
-            is_income=True
-        )
-
-        # ==========================
-        # 📌 FECHAR POSIÇÃO
-        # ==========================
-        if new_quantity == 0:
-            self.repo.close_position(
-                position["id"],
-                date.today().isoformat()
-            )
+        if new_quantity <= 1e-9:
+            self.repo.close_position(position["id"], operation_date.isoformat())
         else:
-            self.repo.update_position(
-                position["id"],
-                new_quantity,
-                avg_price,
-                new_total
-            )
+            self.repo.update_position(position["id"], new_quantity, avg_price, new_total)

@@ -4,7 +4,8 @@ from PySide6.QtWidgets import (
     QTableView, QPushButton,
     QComboBox, QDateEdit,
     QLabel, QTabWidget,
-    QMessageBox, QLineEdit
+    QMessageBox, QLineEdit,
+    QScrollArea, QSizePolicy
 )
 from PySide6.QtCore import QDate, Qt
 from ui.lancamentos_table import LancamentosTableModel
@@ -17,6 +18,10 @@ from ui.import_preview_dialog import ImportPreviewDialog
 from ui.transferencia_dialog import TransferenciaDialog
 from ui.distribuicao_chart import DistribuicaoChart
 from ui.evolucao_chart import EvolucaoChart
+from ui.receitas_despesas_chart import ReceitasDespesasChart
+from ui.gastos_categoria_chart import GastosCategoriaChart
+from ui.fluxo_caixa_chart import FluxoCaixaChart
+from ui.investimentos_view import InvestimentosView
 from datetime import date
 
 def format_brl(valor: float) -> str:
@@ -45,13 +50,17 @@ class MainWindow(QMainWindow):
     # ABA RESUMO
     # ----------------------------
     def _resumo_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
         # ==========================
-        # 🔘 FILTROS MÊS / ANO
+        # FILTROS MÊS / ANO (fixo, fora do scroll)
         # ==========================
-        filtros = QHBoxLayout()
+        filtros_widget = QWidget()
+        filtros = QHBoxLayout(filtros_widget)
+        filtros.setContentsMargins(12, 8, 12, 4)
 
         self.cmb_mes = QComboBox()
         self.cmb_ano = QComboBox()
@@ -71,16 +80,18 @@ class MainWindow(QMainWindow):
         filtros.addWidget(self.cmb_ano)
         filtros.addStretch()
 
-        layout.addLayout(filtros)
-
-        # 🔗 CONECTA FILTROS
         self.cmb_mes.currentIndexChanged.connect(self._update_resumo)
         self.cmb_ano.currentIndexChanged.connect(self._update_resumo)
 
+        outer_layout.addWidget(filtros_widget)
+
         # ==========================
-        # 📊 CARDS
+        # CARDS (fixo, fora do scroll)
         # ==========================
-        grid = QHBoxLayout()
+        cards_widget = QWidget()
+        grid = QHBoxLayout(cards_widget)
+        grid.setContentsMargins(12, 0, 12, 8)
+        grid.setSpacing(8)
 
         self.lbl_saldo = QLabel("R$ 0,00")
         self.lbl_proventos = QLabel("R$ 0,00")
@@ -96,14 +107,60 @@ class MainWindow(QMainWindow):
         grid.addWidget(self._total_card("Investimentos", self.lbl_investimentos, "#ef6c00"))
         grid.addWidget(self._total_card("Reserva", self.lbl_reserva, "#6a1b9a"))
 
-        layout.addLayout(grid)
+        outer_layout.addWidget(cards_widget)
 
-        # 🔒 GRÁFICOS NÃO MEXEMOS
-        layout.addWidget(DistribuicaoChart())
-        layout.addWidget(EvolucaoChart())
+        # ==========================
+        # ÁREA SCROLLÁVEL — GRÁFICOS
+        # ==========================
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(12, 4, 12, 12)
+        scroll_layout.setSpacing(12)
+
+        # Linha 1: Donut (esq) + Receitas vs Despesas (dir)
+        row1 = QHBoxLayout()
+        row1.setSpacing(12)
+        self.chart_distribuicao = DistribuicaoChart()
+        self.chart_distribuicao.setFixedHeight(300)
+        self.chart_distribuicao.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.chart_receitas = ReceitasDespesasChart()
+        self.chart_receitas.setFixedHeight(300)
+        self.chart_receitas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        row1.addWidget(self.chart_distribuicao, 2)
+        row1.addWidget(self.chart_receitas, 3)
+        scroll_layout.addLayout(row1)
+
+        # Linha 2: Evolução do patrimônio (largura total)
+        self.chart_evolucao = EvolucaoChart()
+        self.chart_evolucao.setFixedHeight(320)
+        scroll_layout.addWidget(self.chart_evolucao)
+
+        # Linha 3: Gastos por categoria (esq) + Fluxo de caixa (dir)
+        row3 = QHBoxLayout()
+        row3.setSpacing(12)
+        self.chart_gastos = GastosCategoriaChart()
+        self.chart_gastos.setFixedHeight(300)
+        self.chart_gastos.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.chart_fluxo = FluxoCaixaChart()
+        self.chart_fluxo.setFixedHeight(300)
+        self.chart_fluxo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        row3.addWidget(self.chart_gastos)
+        row3.addWidget(self.chart_fluxo)
+        scroll_layout.addLayout(row3)
+
+        scroll.setWidget(scroll_content)
+        outer_layout.addWidget(scroll)
 
         self._update_resumo()
-        return widget
+        return outer
 
     # =====================================================
     # 🔄 ATUALIZA RESUMO (COM FILTRO)
@@ -170,6 +227,11 @@ class MainWindow(QMainWindow):
         self.lbl_saldo.setText(format_brl(saldo_total))
         self.lbl_proventos.setText(format_brl(proventos))
         self.lbl_despesas.setText(format_brl(despesas))
+
+        # Atualiza gráficos que respondem ao filtro
+        for chart in ("chart_distribuicao", "chart_gastos"):
+            if hasattr(self, chart):
+                getattr(self, chart).refresh(mes=mes, ano=ano)
 
     def on_period_changed(self, mes: int, ano: int):
         self.mes_filtro = mes
@@ -436,12 +498,9 @@ class MainWindow(QMainWindow):
     # ABA INVESTIMENTOS
     # ----------------------------
     def _investimentos_tab(self) -> QWidget:
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        layout.addWidget(QLabel("Área de investimentos"))
-
-        return widget
+        view = InvestimentosView()
+        view.data_changed.connect(self._update_resumo)
+        return view
     
     # ----------------------------
     # CARDS

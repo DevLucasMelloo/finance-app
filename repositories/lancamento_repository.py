@@ -107,6 +107,29 @@ class LancamentoRepository:
             ))
             conn.commit()
             
+    def add_from_investment(self, amount: float, nature: "NatureType", description: str, is_income: bool) -> int:
+        entry_type = EntryType.INCOME if is_income else EntryType.EXPENSE
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO lancamentos (
+                    entry_date, amount, entry_type, payment_method,
+                    category, nature, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    date.today().isoformat(),
+                    amount,
+                    entry_type.value,
+                    PaymentMethod.PIX.value,
+                    "Investimento",
+                    nature.value,
+                    description,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
     def add_transferencia(self, amount, from_nature, to_nature):
         with get_connection() as conn:
             conn.execute("""
